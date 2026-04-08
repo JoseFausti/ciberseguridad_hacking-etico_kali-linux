@@ -1,7 +1,0 @@
-pysmb
-rich
-scapy
-pandas
-pypdf2
-pytesseract
-argparse
