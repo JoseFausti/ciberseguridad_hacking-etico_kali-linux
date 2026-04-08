@@ -3,6 +3,7 @@ import nmap
 import os
 import json
 from openai import OpenAI
+from jinja2 import Environment, FileSystemLoader
 
 # Cargar las variables de entorno desde el archivo .env para garantizar la seguridad y configurabilidad.
 load_dotenv()
@@ -121,8 +122,6 @@ def parse_response(response_text):
         print("[ERROR] JSON inválido recibido")
         print(response_text)
         return None
-    
-from jinja2 import Environment, FileSystemLoader
 
 def generate_html(data):
     """Genera un reporte HTML a partir del JSON."""
