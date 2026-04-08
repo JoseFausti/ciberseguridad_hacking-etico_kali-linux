@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Reporte de Vulnerabilidades</title>
+</head>
+<body>
+
+    <h1>Reporte de Hosts</h1>
+
+    {% for ip, info in data.items() %}
+        <h2>{{ ip }}</h2>
+        a<p><strong>Prioridad:</strong> {{ info.priority }}</p>
+        <p><strong>Motivo:</strong> {{ info.reason }}</p>
+        <hr>
+    {% endfor %}
+
+</body>
+</html>
