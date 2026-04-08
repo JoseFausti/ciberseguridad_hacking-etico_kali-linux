@@ -4,6 +4,54 @@ __pycache__/
 *.pyo
 *.pyclass
 
+# Requirements
+*.requirements.txt
+*.requirements-dev.txt
+
+# Django
+*/migrations/*.py
+*/migrations/*.pyc
+*/migrations/*.pyo
+
+# PYCHARM
+*.iml
+*.iproject
+*.iproject.iml
+.idea/
+
+# VENV
+.venv
+venv/
+env/
+
+# MISC
+.DS_Store
+Thumbs.db
+*.bak
+
+# GIT
+.git/
+.gitignore
+
+# DATABASES
+*.sqlite
+*.db
+*.db3
+
+# CACHES
+*.cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PIP
+pip-log.txt
+pip-delete-this-directory.txt
+
+# VIRTUALENV
+virtualenv.py
+
 # KEYS
 *.pem
 *.key
