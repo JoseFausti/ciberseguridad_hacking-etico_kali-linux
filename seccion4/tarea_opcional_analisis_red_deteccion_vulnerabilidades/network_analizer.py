@@ -1,14 +1,11 @@
-import socket
 import ipaddress
-import logging
+import socket
+from scapy.all import ARP, Ether, IP, TCP, sr, srp
+from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
+import re
 from rich.console import Console
 from rich.table import Table
-from tqdm import tqdm
-from scapy.all import *
-
-# Desactivamos la salida de warnings por pantalla para Scapy
-logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 
 class NetworkAnalyzer:
     """Analizador de red para identificar hosts, puertos y servicios abiertos en un rango de red dado.
@@ -27,7 +24,7 @@ class NetworkAnalyzer:
         """
         self.network_range = network_range
         self.timeout = timeout
-
+    
     def _scan_host_sockets(self, ip, port=1000):
         """Escanea un único host y puerto utilizando sockets para determinar si el puerto está abierto.
 
@@ -39,13 +36,13 @@ class NetworkAnalyzer:
             tuple: Tupla que contiene el puerto y un booleano que indica si el puerto está abierto.
         """
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(self.timeout)
-                s.connect((ip, port))
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self.timeout)
+                result = sock.connect((ip, port))
                 return (port, True)
         except (socket.timeout, socket.error):
             return (port, False)
-
+        
     def _scan_host_scapy(self, ip, scan_ports=(135, 445, 139)):
         """Utiliza Scapy para enviar paquetes SYN a puertos específicos y determinar si están abiertos.
 
@@ -62,7 +59,7 @@ class NetworkAnalyzer:
             if answered:
                 return (ip, True)
         return (ip, False)
-
+    
     def hosts_scan_arp(self):
         """Realiza un escaneo ARP para identificar hosts activos en la red.
 
@@ -72,9 +69,27 @@ class NetworkAnalyzer:
         hosts_up = []
         network = ipaddress.ip_network(self.network_range, strict=False)
         arp_request = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=str(network))
-        answered, _ = tqdm(srp(arp_request, timeout=self.timeout, iface_hint=str(network[1]), verbose=0), desc="Escaneando con ARP")
+        answered, _ = srp(arp_request, timeout=self.timeout, iface_hint=str(network[1]), verbose=0)
         for _, received in answered:
             hosts_up.append(received.psrc)
+        return hosts_up
+    
+    def hosts_scan(self, scan_ports=(135, 445, 139)):
+        """Escanea la red para identificar hosts activos utilizando Scapy.
+
+        Args:
+            scan_ports (tuple): Puertos a escanear para determinar la actividad del host.
+
+        Returns:
+            list: Lista de IPs de los hosts activos detectados.
+        """
+        hosts_up = []
+        network = ipaddress.ip_network(self.network_range, strict=False)
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {executor.submit(self._scan_host_scapy, str(host), scan_ports): host for host in tqdm(network.hosts(), desc="Escaneando hosts")}
+            for future in tqdm(futures, desc="Obteniendo resultados"):
+                if future.result()[1]:
+                    hosts_up.append(future.result()[0])
         return hosts_up
     
     def ports_scan(self, port_range=(0, 10000)):
@@ -88,7 +103,7 @@ class NetworkAnalyzer:
         """
         active_hosts = self.hosts_scan()
         all_open_ports = {}
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             for ip in active_hosts:
                 futures = []
                 for port in tqdm(range(*port_range), desc=f"Escaneando puertos en {ip}"):
@@ -98,24 +113,6 @@ class NetworkAnalyzer:
                 if open_ports:
                     all_open_ports[ip] = open_ports
         return all_open_ports
-
-    def hosts_scan(self, scan_ports=(135, 445, 139)):
-        """Escanea la red para identificar hosts activos utilizando Scapy.
-
-        Args:
-            scan_ports (tuple): Puertos a escanear para determinar la actividad del host.
-
-        Returns:
-            list: Lista de IPs de los hosts activos detectados.
-        """
-        network = ipaddress.ip_network(self.network_range, strict=False)
-        hosts_up = []
-        with ThreadPoolExecutor(max_workers=100) as executor:
-            futures = {executor.submit(self._scan_host_scapy, str(host), scan_ports): host for host in tqdm(network.hosts(), desc="Escaneando hosts")}
-            for future in tqdm(futures, desc="Obteniendo resultados"):
-                if future.result()[1]:
-                    hosts_up.append(future.result()[0])
-        return hosts_up
     
     def get_banner(self, ip, port):
         """Intenta obtener el banner de un servicio enviando una solicitud simple y leyendo la respuesta.
@@ -128,14 +125,55 @@ class NetworkAnalyzer:
             str: Banner obtenido o mensaje de error si la conexión falla.
         """
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(self.timeout)
-                s.connect((ip, port))
-                s.send(b'Hello\r\n')
-                return s.recv(1024).decode().strip()
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self.timeout)
+                sock.connect((ip, port))
+                sock.send(b'Hello\r\n')
+                return sock.recv(1024).decode('utf-8', errors='ignore').strip()
         except Exception as e:
             return str(e)
-    
+        
+    def get_service_name(self, banner, port=None):
+        """Extrae el nombre del servicio a partir del banner obtenido.
+
+        Args:
+            banner (str): Banner del servicio.
+            port (int): Puerto del servicio.
+
+        Returns:
+            str: Nombre del servicio normalizado (ssh, ftp, http, etc.)
+        """
+        if not banner:
+            return "unknown"
+
+        banner = banner.lower().strip()
+
+        patterns = {
+            "https": (r"https", 443),
+            "http": (r"http", 80),
+            "ssh": (r"\bssh\b", 22),
+            "ftp": (r"\bftp\b", 21),
+            "smtp": (r"smtp", 25),
+            "pop3": (r"pop3", 110),
+            "imap": (r"imap", 143),
+            "mysql": (r"mysql", 3306),
+            "postgresql": (r"postgres", 5432),
+            "smb": (r"smb|microsoft-ds|netbios", 445),
+            "rdp": (r"rdp|remote desktop", 3389),
+            "dns": (r"dns", 53),
+            "telnet": (r"telnet", 23)
+        }
+
+        for service, pattern in patterns.items():
+            if re.search(pattern[0], banner):
+                return service
+        if port:
+            for service, pattern in patterns.items():
+                if pattern[1] == port:
+                    return service
+
+        return "unknown"
+        
     def services_scan(self, port_range=(0, 10000)):
         """Escanea servicios activos en los hosts detectados, intentando obtener banners de servicios en puertos abiertos.
 
@@ -147,7 +185,7 @@ class NetworkAnalyzer:
         """
         active_hosts = self.hosts_scan()
         services_info = {}
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             for ip in active_hosts:
                 futures = []
                 services_info[ip] = {}
@@ -159,7 +197,30 @@ class NetworkAnalyzer:
                     if result and 'timed out' not in result and 'refused' not in result and 'No route to host' not in result:
                         services_info[ip][port] = result
         return services_info
+    
+    def analyze_services(self, port_range=(0, 10000)):
+        """Escanea la red y devuelve servicios normalizados por IP y puerto."""
 
+        services = self.services_scan(port_range)
+        normalized = {}
+
+        for ip, ports in services.items():
+            normalized[ip] = {}
+
+            for port, banner in ports.items():
+                service = self.get_service_name(banner, port)
+
+                if service == "unknown":
+                    continue
+
+                normalized[ip][port] = service
+
+            # Eliminar IPs sin servicios útiles
+            if not normalized[ip]:
+                del normalized[ip]
+
+        return normalized
+    
     def pretty_print(self, data, data_type="hosts"):
         """Imprime de manera amigable los datos recolectados durante el escaneo.
 
